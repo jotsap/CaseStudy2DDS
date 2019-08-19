@@ -1,0 +1,1129 @@
+---
+title: "DDS Case Study 2"
+author: "Jeremy Otsap"
+date: "August 11, 2019"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(MASS)
+library(caret)
+library(car)
+library(randomForest)
+library(cowplot)
+library(corrplot) 
+library(leaps)
+library(e1071)
+
+```
+
+## Initial Data Cleaning
+
+First we load the data into a data frame. With over 36 parameters, the immediate goal is to determine which ones contribute any insight. 
+
+### Removing Non-contributing Parameters
+
+*Database UniqueID Values*
+ID and EmployeeNumber do not provide actual data, just unique object identifiers, and are thus candidate for elimination from our analysis
+
+*Uni-valued Parameters*
+Additionaly several other parameters are candidates for removal from full analysis:
+
+* All rows have "Y" for Over18
+* All rows have 1 for EmployeeCount
+* All rows have 80 for StandardHours
+
+We create a new data frame with these 4 parameters removed
+
+
+```{r, echo=TRUE}
+
+# loading data
+employee.df <- read.csv(
+  "https://raw.githubusercontent.com/jotsap/CaseStudy2DDS/master/data/CaseStudy2-data.csv", 
+  sep = ",", 
+  header = TRUE)
+str(employee.df)
+head(employee.df) 
+
+# No employees have "N" for 'Over18' parameter
+# Thus candidate for elimination
+employee.df[employee.df$Over18 != "Y",]
+
+# No employees have a value other than 1
+# Thus candidate for elimination
+employee.df[employee.df$EmployeeCount != 1,]
+
+# Every employee had '80' for StandardHours
+# Thus candidate for elimination
+employee.df[employee.df$StandardHours != 80,]
+
+# Placing remaining variables into data frame
+emp_clean.df <- employee.df %>% dplyr::select(
+  Age,
+  Attrition,
+  BusinessTravel,
+  DailyRate,
+  Department,
+  DistanceFromHome,
+  Education,
+  EducationField,
+  EnvironmentSatisfaction,
+  Gender,
+  HourlyRate,
+  JobInvolvement,
+  JobLevel,
+  JobRole,
+  JobSatisfaction,
+  MaritalStatus,
+  MonthlyIncome,
+  MonthlyRate,
+  NumCompaniesWorked,
+  OverTime,
+  PercentSalaryHike,
+  PerformanceRating,
+  RelationshipSatisfaction,
+  StockOptionLevel,
+  TotalWorkingYears,
+  TrainingTimesLastYear,
+  WorkLifeBalance,
+  YearsAtCompany,
+  YearsInCurrentRole,
+  YearsSinceLastPromotion,
+  YearsWithCurrManager
+)
+
+# Checking for missing or "na" values
+# none found
+table(emp_clean.df %>% is.na())
+
+
+
+```
+
+
+### Problem Variables
+
+We have a number of other problematic parameters that we need to address before going into a deeper analysis. 
+
+*Multiple Values for Salary and Rate*
+One of the response variables we are trying to predict is salary, based on the MonthlyIncome values. However, there are two other parameters regarding money for which we have no explanation as to their meaning:
+
+* HourlyRate
+* DailyRate
+* MonthlyRate
+
+Given that we have no idea what these represent, we need to understand if there is evidence of a relationship with either response MonthlyIncome or Attrition. 
+
+A visual analysis of each of HourlyRate, DailyRate, and MonthlyRate show a uniform distribution of all values. Which differs significantly from the right-skewed distribution for Salary, which also has several outliers on the upper bound. [Note also typical of most samples of Salary]
+
+
+```{r, echo=TRUE}
+
+# histogram of MonthlyRate
+hist(employee.df$MonthlyIncome, main = "Monthly Income")
+# histogram of MonthlyRate
+hist(employee.df$MonthlyRate, main = "Monthly Rate")
+# histogram of HourlyRate
+hist(employee.df$HourlyRate, main = "Hourly Rate")
+# histogram of DailyRate
+hist(employee.df$DailyRate, main = "Daily Rate")
+
+```
+
+When testing for correlation among these parameters, there appears to be no evidence of a correlation to MonthlyIncome vs any of the other three. Note its concerning that additionaly there is no evidence of correlation of DailyRate, HourlyRate, or MonthlyRate to each other. At the very least one should expect to see an employee's Hourly Rate or Daily Rate have some relation to each other, for instance if these were employees in a consultancy.
+
+```{r, echo=TRUE}
+# No evidence of correlation between MonthlyRate and HourlyRate
+# R value of -0.01603517 
+cor.test(employee.df$MonthlyRate, employee.df$HourlyRate)
+
+# No evidence of correlation between DailyRate and HourlyRate
+# R value of 0.04849597 
+cor.test(employee.df$DailyRate, employee.df$HourlyRate)
+
+# No evidence of correlation between MonthlyRate and DailyRate
+# R value of -0.02764077 
+cor.test(employee.df$MonthlyRate, employee.df$DailyRate)
+
+# No evidence of correlation between MonthlyRate and MonthlyIncome
+# R value of 0.06459407 
+cor.test(employee.df$MonthlyRate, employee.df$MonthlyIncome)
+
+# No evidence of correlation between MonthlyIncome and HourlyRate
+# R value of 0.002391151 
+cor.test(employee.df$MonthlyIncome, employee.df$HourlyRate)
+
+# No evidence of correlation between MonthlyIncome and DailyRate
+# R value of 0.00008790339 
+cor.test(employee.df$MonthlyIncome, employee.df$DailyRate)
+
+```
+
+When looking at their relationship with Attrition, no clear distinction emerges for HourlyRate, DailyRate, or MonthlyRate. However for MonthlyIncome the distribution visually appears different between the "yes" and "no" groups
+
+```{r, echo=TRUE}
+# Attrition vs HourlyRate
+boxplot(employee.df$HourlyRate ~ employee.df$Attrition, 
+        ylab = "Dollars",
+        main = "Hourly Rate by Attrition")
+# Attrition vs DailyRate
+boxplot(employee.df$DailyRate ~ employee.df$Attrition, 
+        ylab = "Dollars",
+        main = "Hourly Rate by Attrition")
+# Attrition vs MonthlyRate
+boxplot(employee.df$MonthlyRate ~ employee.df$Attrition, 
+        ylab = "Dollars",
+        main = "Monthly Rate by Attrition")
+# Attrition vs MonthlyIncome
+boxplot(employee.df$MonthlyIncome ~ employee.df$Attrition, 
+        ylab = "Dollars",
+        main = "Monthly Income by Attrition")
+
+```
+
+
+Lastly, when we do a scatter plot for all combinations of these parameters, no visual patterns emerge.  
+
+```{r, echo=TRUE}
+
+# Pairwise scatterplot
+pairs(~ MonthlyIncome + HourlyRate + DailyRate + MonthlyRate,
+  data = employee.df,
+  main = "Scatterplot for All Monetary Parameters")
+```
+
+To clarify, all three of these values allude to some sort of salary. We are are told the *only* value of the three that we do know is MonthlyIncome. HourlyRate, DailyRate and MonthlyRate have no explanation, and if they were related to something similar, such as how much an employee's billing rate is [i.e. for consultancy], then there should have been a correlation between HourlyRate and DailyRate. Which leads to the larger concern of what do these variables mean and was the data entered correctly
+
+In light of this we will *not* include these 2 parameters in further analysis:
+* MonthlyRate
+* DailyRate
+* HourlyRate
+
+Final analysis will rely ONLY on MonthlyIncome
+
+
+*PerformanceReview*
+
+This parameter seems to be either incomplete or potentially have erroneous data. Again we have no context for the field, and the only values are 3 or 4
+
+
+```{r, echo=TRUE}
+# Treating values as factors not numerics
+pie(
+  count(employee.df, as.factor(PerformanceRating) )$n,
+  labels = count(employee.df, as.factor(PerformanceRating))$"as.factor(PerformanceRating)",
+  main = "Performance Rating: All Values"
+  )
+
+```
+
+Futhermore there doesn't appear to be compelling visual evidence of a difference in MonthlyIncome distribution for "4" vs "3" ratings
+
+Given this we will also not be including PerformanceRating in the final analysis.
+
+```{r, echo=TRUE}
+# treating value as factors not numerics
+boxplot(employee.df$MonthlyIncome ~ as.factor( employee.df$PerformanceRating))
+
+```
+
+
+### Cleaned Data Set
+
+Lets create a clean data set in light of our current data exploration. We have reduced the original data frame from 36 parameters down to 27.
+
+
+```{r, echo=TRUE}
+
+# Placing remaining variables into data frame
+emp_clean.df <- employee.df %>% dplyr::select(
+  MonthlyIncome,
+  Attrition,
+  Age,
+  BusinessTravel,
+  Department,
+  DistanceFromHome,
+  Education,
+  EducationField,
+  EnvironmentSatisfaction,
+  Gender,
+  JobInvolvement,
+  JobLevel,
+  JobRole,
+  JobSatisfaction,
+  MaritalStatus,
+  NumCompaniesWorked,
+  OverTime,
+  PercentSalaryHike,
+  RelationshipSatisfaction,
+  StockOptionLevel,
+  TotalWorkingYears,
+  TrainingTimesLastYear,
+  WorkLifeBalance,
+  YearsAtCompany,
+  YearsInCurrentRole,
+  YearsSinceLastPromotion,
+  YearsWithCurrManager
+)
+
+# Checking for missing or "na" values
+# none found
+table(emp_clean.df %>% is.na())
+
+
+```
+
+
+### Data Prep for Income Response Variable
+
+In order to allow us to do categorical analysis for the salary response variable we created a new response variable AnnualIncome based on these different categories:
+
+* $0 - $30,000 annual
+* $30,000 - $60,000 annual
+* $60,000 - $90,000 annual
+* $Over 90,000 annual
+
+We will print out the 10 entries to validate the numerical values for MonthlyIncome are being correctly classified into the correct category for *AnnualIncome* which will be added for final analysis.
+
+```{r, echo=TRUE}
+
+# making categories for MonthlyIncome
+# $30,000 annual
+# $60,000 annual
+# $90,000 annual
+# $Over 90k annual
+
+cut(emp_clean.df$MonthlyIncome, 
+    breaks = c(0,2500,5000,7500,999999), 
+    labels = c("Under_30k","30k_to_60k","60k_to_90k","Over_90k") 
+    ) -> emp_clean.df$AnnualIncome
+
+# validate accuracy new Annual Income categorical parameter
+emp_clean.df[c(1,5,10,15,20,25,30,35,40,45),c("MonthlyIncome","AnnualIncome")]
+
+
+```
+
+
+### Data Prep: Categorical & Numeric 
+
+To simplify some analytical and graphical exercises, we will create separate data frames for numeric and categoric data
+
+```{r, echo=TRUE}
+
+# categoric parameters only
+emp_clean.df %>% keep(is.factor) -> emp_clean_factor.df
+# put parameter names into vector to verify
+emp_clean.df %>% keep(is.factor) %>% names -> catNames
+catNames
+
+# numeric parameters only
+emp_clean.df %>% keep(is.numeric) -> emp_clean_numeric.df
+# put parameter names into vector to verify
+emp_clean.df %>% keep(is.numeric) %>% names -> numNames
+numNames
+
+
+```
+
+## Initial Exploratory Analysis
+
+Now that our data is properly cleaned and setup we will go forward with some exploratory and visual analysis.
+
+### Numeric Variables
+
+We can quickly create some graphs to show us the range & spread for all numeric values
+
+```{r, echo=TRUE}
+
+# histogram of all numeric values
+emp_clean_numeric.df %>% keep(is.numeric) %>% gather %>% ggplot(aes(x = value)) + facet_wrap(~key, scales = "free")+ geom_histogram()
+
+```
+
+When we plot all the numeric variables against MonthlyIncome, we observe the following:
+
+* Evidence of a strong relationship with JobLevel
+* Evidence of a moderate relationship with TotalWorkingYears
+* Evidence of a moderate relationship with YearsAtCompany
+* Evidence of a moderate relationship with YearsInCurrentRole
+
+
+```{r, echo=TRUE}
+
+plot_vs_response <- function(x){
+  plot(emp_clean_numeric.df$MonthlyIncome ~ emp_clean_numeric.df[[x]], xlab = x)
+  lw1 <- loess(emp_clean_numeric.df$MonthlyIncome ~ emp_clean_numeric.df[[x]])
+  j <- order(emp_clean_numeric.df[[x]])
+  lines(emp_clean_numeric.df[[x]][j],lw1$fitted[j],col="red",lwd=3)
+}
+
+# Lapply on all xnames values and assing to list object
+# plot all numeric variables as x vs response with lapply
+# use numNames vector previously defined 
+
+lapply(numNames, plot_vs_response) 
+
+```
+
+
+
+### Categorical Variables
+
+```{r, echo=TRUE}
+
+# Defining Plot Function
+catplot <- function(df, x,y){
+  ggplot(data = df, aes_string(x = x, fill = y)) + 
+    geom_bar(position = "fill", alpha = 0.9) + 
+    coord_flip()
+}
+
+```
+
+*Annual Income*
+
+The breakdown of annual income shows a reasonably even distribution for the different income categories. The largest delta that exist is the 145 employees that make under 30k per year and the 298 that make between 30k to 60k. While it is about twice as much that is still within acceptable parameters for most models
+
+
+```{r, echo=TRUE}
+
+# AnnualIncome: Total Breakdown
+count(emp_clean_factor.df, AnnualIncome)
+
+# Pie chart
+pie(
+  count(emp_clean_factor.df, AnnualIncome)$n,
+  labels = count(emp_clean_factor.df, AnnualIncome)$AnnualIncome,
+  main = "Annual Income"
+)
+
+```
+
+Looking at a comparision of each the categorical variables for the different levels of AnnualIncome, we can see the following:
+
+* JobRoles for "Research Director" and "Manager" have almost exclusively higher annual salaries of over $90,000 
+* JobRoles for "Healthcare Representative," "Manufacturing Director," and "Sales Executive" have no employees making under $30,00 per year
+* JobRoles for "Lab Technician," "Sales Rep," "Research Scientist" have almost no employees in the over $90,000 category
+
+Most of the other categories were fairly evenly distributed. Thus for predicting salary the JobRole will likely be a critical factor.
+
+
+
+```{r, echo=TRUE}
+
+# Excluding Attrition and AnnualIncome
+xnames <- catNames[-c(1,9)]
+
+# Lapply on all xnames values and assing to list object
+catplot.list <-lapply(xnames, function(x) catplot(emp_clean_factor.df,x, "AnnualIncome"))
+# output plot grid
+cowplot::plot_grid(plotlist = catplot.list)
+
+```
+
+
+*Attrition*
+
+There are significantly more employees that do not leave their companies vs the ones that do: 730 "No" vs only 140 "Yes." Thus we just need to keep this in mind as we look for changes in the ratios or percentages rather than the raw numbers themselves.
+
+
+```{r, echo=TRUE}
+
+# Attrition: Total Breakdown
+count(emp_clean_factor.df, Attrition)
+
+# Pie chart
+pie(
+  count(emp_clean_factor.df, Attrition)$n,
+  labels = count(emp_clean_factor.df, Attrition)$Attrition,
+  main = "Attrition"
+)
+
+```
+
+Looking at a comparision of each the categorical variables for "Yes" vs "No" Attrition, we can see significant differences for the following:
+
+* OverTime category for "Yes"
+* JobRole category for "Sales Representative"
+* MaritalStatus category for "Single"
+* AnnualIncome category for "Under_30k"
+
+
+```{r, echo=TRUE}
+
+# Excluding Attrition
+xnames <- catNames[-1]
+
+# Lapply on all xnames values and assing to list object
+catplot.list <-lapply(xnames, function(x) catplot(emp_clean_factor.df,x, "Attrition"))
+# output plot grid
+cowplot::plot_grid(plotlist = catplot.list)
+
+```
+
+
+## Feature Modeling
+
+Now we will try to determine which variables are the most influential for employee attrition and salary.
+
+### Relationship Between Response Variables
+
+We have 2 response variables to examine:
+* Attrition: binomial / categorical [i.e. "yes" or "no"]
+* MonthlyIncome: numerical salary by month
+
+First we use a boxplot to compare the MonthlyIncome distribution for "Yes" vs "No" Attrition groups. We an certainly see that visually the distributions appear to be different from each other.
+
+```{r, echo=TRUE}
+
+# Comparing MonthlyIncome by different Attrition levels
+boxplot(emp_clean.df$MonthlyIncome ~ emp_clean.df$Attrition,
+        main = "Monthly Income by Attrition",
+        horizontal = T,
+        xlab = "Dollars" )
+
+```
+
+We split the income values into separate vectors and run some exploratory analysis on them. We see that there are about 5 times as many employees who stay vs those who leave. It also appears the mean MonthlyIncome for employees who leave is somewhat lower: 
+
+* $4764.79 for empoyees who leave 
+* $6702 for those that stay
+
+There is also greater variance in between the two groups as well:
+* The "Yes" group having a standard deviation of $3786.389
+* The "No" group having a standard deviation of $4675.472 
+
+
+```{r, echo=TRUE}
+
+# make vectors for monthly income by attrition
+emp_clean.df$MonthlyIncome[emp_clean.df$Attrition == "Yes"] -> mo_income_yes
+emp_clean.df$MonthlyIncome[emp_clean.df$Attrition == "No"] -> mo_income_no
+
+# number of yes vs no attrition
+length(mo_income_yes)
+length(mo_income_no)
+
+summary(mo_income_yes) 
+summary(mo_income_no) 
+
+sd(mo_income_yes) 
+sd(mo_income_no) 
+
+# histogram of each
+hist(mo_income_yes, xlab = "Dollars", main = "Salary for Attrition: Yes")
+hist(mo_income_no, xlab = "Dollars", main = "Salary for Attrition: No")
+
+```
+
+Because both distrubitions differ significantly from normality we log tranform them in order to do a t-test and see if there is evidence that the distributions differ significantly from each other. 
+
+The QQ Plot of the log transformed MonthlyIncome for each group shows much better adherence to normality, and brings the variance of each group much closer together. 
+
+The T-test itself shows there is a significant difference between the Monthly Incomes of "Yes" vs "No" attrition groups, p-value < 0.0001. This is strong evidence that MonthlyIncome has an effect on Attrition
+
+
+```{r, echo=TRUE}
+
+### T-test to compare each group
+
+# taking log of each
+qqnorm(log(mo_income_yes))
+qqnorm(log(mo_income_no))
+
+# even using the log of both still get 
+# to be safe we account for unequal variance
+t.test(log(mo_income_no), log(mo_income_yes), var.equal = F) 
+
+
+```
+
+
+## Random Forest for Influential Factors
+
+We still have the challenge of 25 parameters to determine MonthlyIncome, and 26 parameters [including MonthlyIncome] to predict Attrition.
+
+Here we are going to use Random Forest to help see which of these are the most influential and cross-reference against common industry expertise. It is essentially a collection or "ensemble"" of individual decision trees, by first generating a random sample of the original data with replacement, aka "bootstrapping." Multiple subsets of trees are built using a randomly select set of our data set's variables.
+
+The variable importance plot tells us how important each variable is in classifying the data. The plot on the left "Mean Decrease in Accuracy" is the one we will be focusing on. Essentially translates that the more important the parameter, the less accurate the random forest model becomes when it is omitted.
+
+
+*Attrition*
+
+Top 5 most influential were: 
+
+* OverTime
+* MonthlyIncome
+* JobRole
+* StockOptionLevel
+* Age
+
+
+```{r, echo=TRUE}
+
+# excluding redundant AnnualIncome
+emp_clean.df[,-c(28)] -> emp_attrition_forest.df
+
+# Random forest for Attrition
+emp_attrition_forest.rf <- randomForest(Attrition ~., 
+                                     data = emp_attrition_forest.df, 
+                                     importance = TRUE)
+varImpPlot(emp_attrition_forest.rf)
+
+
+```
+
+
+### Deeper look at OverTime
+
+The ratio or percentage of employees who leave the company is significantly higher for employees that do not get overtime vs those that do:
+
+* OverTime "Yes": 172 stay vs 80 leave
+* OverTime "No": 60 stay vs 558 leave
+
+
+```{r, echo=TRUE}
+
+barplot(
+  emp_clean_factor.df %>% group_by(Attrition) %>% count(OverTime) %>% .[[3]],
+  col = emp_clean_factor.df %>% group_by(Attrition) %>% count(OverTime) %>% .[[2]],
+  names.arg = emp_clean_factor.df %>% group_by(Attrition) %>% count(OverTime) %>% .[[1]],
+  legend.text = emp_clean_factor.df %>% group_by(Attrition) %>% count(OverTime) %>% .[[2]],
+  horiz = T,
+  xlab = "Number of Employees",
+  main = "Attrition: OverTime"
+)
+
+
+```
+
+
+### Deeper look at AnnualIncome
+
+Again the ratio of employees that leave is higher depending on what level they are in AnnualIncome category:
+
+* Under_30k: 96 stay vs 49 leave
+* 30k_to_60k: 248 stay vs 50 leave
+* 60k_to_90k: 175 stay vs 16 leave
+* Over_90k: 211 stay vs 25 leave
+
+
+```{r, echo=TRUE}
+
+barplot(
+  emp_clean_factor.df %>% group_by(Attrition) %>% count(AnnualIncome) %>% .[[3]],
+  col = emp_clean_factor.df %>% group_by(Attrition) %>% count(AnnualIncome) %>% .[[2]],
+  names.arg = emp_clean_factor.df %>% group_by(Attrition) %>% count(AnnualIncome) %>% .[[1]],
+  legend.text = emp_clean_factor.df %>% group_by(Attrition) %>% count(AnnualIncome) %>% .[[2]],
+  horiz = T,
+  xlab = "Number of Employees",
+  main = "Attrition: Annual Income"
+)
+
+```
+
+
+### Deeper look at JobRole
+
+Certain job roles have a different attrition ratio. Sales Reps is almost a 1 for 1 with 29 stay vs 24 leave. On the other end Research Directors and Manufacturing Directors have the lowest attrition [50 vs 1] and [85 vs 2] respectively.
+
+```{r, echo=TRUE}
+
+barplot(
+  emp_clean_factor.df %>% group_by(Attrition) %>% count(JobRole) %>% .[[3]],
+  col = rainbow(9),
+  names.arg = emp_clean_factor.df %>% group_by(Attrition) %>% count(JobRole) %>% .[[1]],
+  legend.text = emp_clean_factor.df %>% group_by(Attrition) %>% count(JobRole) %>% .[[2]],
+  horiz = T,
+  xlab = "Number of Employees",
+  main = "Attrition: JobRole"
+)
+
+```
+
+
+
+*MonthlyIncome*
+Top 5 most influential were: 
+
+* JobLevel
+* JobRole
+* TotalWorkingYears
+* YearsAtCompany
+* Age
+
+
+```{r, echo=TRUE}
+
+# excluding redundant AnnualIncome and Attrition
+emp_clean.df[,-c(2,28)] -> emp_salary_forest.df
+
+# Random forest for MonthlyIncome
+emp_salary_forest.rf <- randomForest(MonthlyIncome ~., 
+                                     data = emp_salary_forest.df, 
+                                     importance = TRUE)
+varImpPlot(emp_salary_forest.rf)
+
+
+```
+
+
+## Monthly Income
+
+### Correlation in Numeric Variables
+
+We can see the highest correlation that exists for MonthlyIncome very much align to common sense:
+
+* MonthlyIncome & JobLevel = 0.95
+* MonthlyIncome & TotalWorkingYears = 0.78
+
+```{r, echo=TRUE}
+
+
+# creating function for heatmap using corrplot::corrplot()
+
+correlator  <-  function(df){
+  df %>%
+    keep(is.numeric) %>%
+    tidyr::drop_na() %>%
+    cor %>%
+    corrplot( addCoef.col = "white", number.digits = 2,
+              number.cex = 0.5, method="square",
+              order="hclust", title="Variable Corr Heatmap",
+              tl.srt=45, tl.cex = 0.8)
+}
+
+```
+
+### Closer Look At Job Level
+
+A closer examination supports evidence of a relationship between MonthlyIncome and JobLevel
+
+```{r, echo=TRUE}
+
+# monthly income by job level
+plot(emp_clean.df$JobLevel, emp_clean.df$MonthlyIncome, main = "Monthly Income vs Job Level",
+     xlab = "Job Level",
+     ylab = "Dollars")
+lines(lowess(emp_clean.df$JobLevel, emp_clean.df$MonthlyIncome), col = "red")
+
+
+```
+
+### Closer Look At Total Working Years
+
+A closer examination supports evidence of a relationship between MonthlyIncome and TotalWorkingYears
+
+```{r, echo=TRUE}
+
+# monthly income total working years
+plot(emp_clean.df$TotalWorkingYears, emp_clean.df$MonthlyIncome, main = "Monthly Income vs Total Working Years",
+     xlab = "Years",
+     ylab = "Dollars")
+lines(lowess(emp_clean.df$TotalWorkingYears, emp_clean.df$MonthlyIncome), col = "red")
+
+
+```
+
+### Linear Regression Model: MonthlyIncome
+
+First we run a linear regression against MonthlyIncome. Note that R will automatically convert factors into dummy variables for us. Uur model shows the following as important parameters that all have p-value <= 0.05:
+
+* BusinessTravel: Travel_Rarely
+* JobLevel
+* JobRole: Laboratory Technician
+* JobRole: Manager
+* JobRole: Research Director
+* JobRole: Research Scientist
+* TotalWorkingYears
+* YearsSinceLastPromotion 
+
+However we need to be congnizant of covariance. When we examine our model we notice that JobRole and Department have extremely high VIF. Typically a VIF value should never be larger than 10.
+
+In light of this we will update our model
+
+
+```{r, echo=TRUE}
+
+### Linear Regression on MonthlyIncome
+
+#NOTE: Re-using Random Forest DF that excluded Attrition and AnnualIncome 
+emp_salary_forest.df -> emp_salary_reg.df
+# First create model on all variables
+lm(MonthlyIncome ~ ., data =  emp_salary_reg.df) -> emp_salary.lm
+summary(emp_salary.lm)
+# Then test for VIF
+vif(emp_salary.lm)
+
+
+```
+
+Our model is looking better but we still have two variables with a VIF higher than 5:
+* TotalWorkingYears
+* YearsAtCompany 
+
+Given that TotalWorkingYears is one of the critical parameters identified by the model, we will leave it in for now and remove only YearsAtCompany
+
+We update our data set to remove Department, JobRole, and YearsAtCompany and rerun the regression model. Important Factors that all have p-value <= 0.05:
+
+* BusinessTravel: Travel_Rarely
+* JobLevel
+* JobRole: Laboratory Technician
+* JobRole: Manager
+* JobRole: Research Director
+* JobRole: Research Scientist
+* TotalWorkingYears
+* YearsSinceLastPromotion 
+
+We can see now that all parameters have a VIF lower than 5
+
+```{r, echo=TRUE}
+
+# Rerun with JobRole and Department removed
+emp_salary_reg.df[,-c(4,12,23)] -> emp_salary_reg.df
+# create model on remaining variables
+lm(MonthlyIncome ~ ., data =  emp_salary_reg.df) -> emp_salary.lm
+summary(emp_salary.lm)
+# Then test for VIF
+vif(emp_salary.lm)
+
+```
+
+
+### Stepwise Selection
+
+Now that we have used multicollinearity to reduce to 23 parameters, we now will run Stepwise Feature Selection to find the 6 most influential variables and compare them to both what the Random Forest found as well as the prior Linear Regression.
+
+Important Factors that all have p-value <= 0.05:
+
+* BusinessTravel: Travel_Rarely
+* DistanceFromHome 
+* EducationField: Marketing
+* JobLevel
+* TotalWorkingYears
+* YearsWithCurrManager
+
+We can see the RMSE of this model is $1377.65
+
+And the Adjusted R-squared is 0.9128, which means an estimated 91.28% of the MonthlyIncome variable can be accounted for by this model.
+
+
+```{r, echo=TRUE}
+
+# set method to use 5-fold cross-validation
+trainControl(method = "cv", number = 5) -> train.cv
+
+train(MonthlyIncome ~ .,
+  data = emp_salary_reg.df,
+  method = "lmStepAIC",
+  trControl = train.cv
+) -> emp_salary.step
+
+# Final model
+summary(emp_salary.step)
+
+# Results including RMSE of final model
+emp_salary.step$results
+
+
+```
+
+### Comparison to Random Forest
+
+The Random Forest performs slightly better with an Adjusted R-squared of 0.9465 and the RMSE of $1066.143
+
+
+```{r, echo=TRUE}
+
+# Compare to Randome Forest
+# emp_salary_reg.df[,-c(4,12)] -> emp_salary_reg.df
+
+train(MonthlyIncome ~ JobLevel + JobRole + TotalWorkingYears + YearsAtCompany + Age,
+  data = emp_clean.df,
+  method = "lm",
+  trControl = train.cv
+) -> emp_salary_rf.step
+
+# Final model
+summary(emp_salary_rf.step)
+
+# Results including RMSE of final model
+emp_salary_rf.step$results
+
+
+
+```
+
+
+### MonthlyIncome Predictions
+
+
+*Training Data*
+
+We can see prediction error for Random Forest, 0.1652, vs the Linear Regression, 0.2112. Thus we will use the RF model on our final data
+
+```{r, echo=TRUE}
+
+# generating predictions on test data
+employee.df$MonthlyIncome_LM <- predict(emp_salary.step, newdata = employee.df)
+employee.df$MonthlyIncome_RF <- predict(emp_salary_rf.step, newdata = employee.df)
+
+# Prediction Error for Linear Regression
+RMSE(employee.df$MonthlyIncome_LM, employee.df$MonthlyIncome) / mean(employee.df$MonthlyIncome)
+
+# Prediction Error for Linear Regression
+RMSE(employee.df$MonthlyIncome_RF, employee.df$MonthlyIncome) / mean(employee.df$MonthlyIncome)
+
+```
+
+*Test Data*
+
+We run the model on the test data sets that do not have the MonthlyIncome parameter
+
+NOTE: Was not sure if I need to include BOTH the Regression and Random Forest predictions since homework doc said "You MUST use linear regression but MAY include additional models." So just to be safe I'm including both:
+
+* MonthlyIncome_LM = Predictions for Regression
+* MonthlyIncome_RF = Predictions for Random Forest
+
+
+```{r, echo=TRUE}
+
+# loading prediction data
+salary_pred.df <- read.csv(
+  "https://raw.githubusercontent.com/jotsap/CaseStudy2DDS/master/data/CaseStudy2CompSet_NoSalary.csv", 
+  sep = ",", 
+  header = TRUE)
+str(salary_pred.df)
+head(salary_pred.df) 
+
+# generating predictions on test data
+salary_pred.df$MonthlyIncome_LM <- predict(emp_salary.step, newdata = salary_pred.df)
+salary_pred.df$MonthlyIncome_RF <- predict(emp_salary_rf.step, newdata = salary_pred.df)
+
+
+```
+
+
+## Attrition
+
+Now we will focus on Attrition, first using K-Nearest Neighbor [KNN], and then comparing to a Random Forest model
+
+First we need to split the data into a training & testing set. 80% of our data will be used for the training set and will be used to create the model. The remaining 20% is for the test set, which will be used to validate actual values vs predicted values using our model. 
+
+We need to measure the models: 
+
+* Accuracy: correct results / all results
+* Sensitivity: correctly predicted Attrition:No / All actual "No" 
+* Specificity: correctly predicted Attrition:Yes / All actual "Yes" 
+
+```{r, echo=TRUE}
+
+### Creating 80/20 Training / Test Data Split 
+
+attrition.vector <- createDataPartition(emp_attrition_forest.df$Attrition, p = 0.8, list = F)
+attrition.train <- emp_attrition_forest.df[attrition.vector,] 
+attrition.test <- emp_attrition_forest.df[-attrition.vector,]
+
+# validate train and test sets
+head(attrition.train)
+head(attrition.test)
+
+```
+
+### K-Nearest Neighbor
+
+Overall when we run the model on the test data set we acheive above 85% for all categories.
+
+       No Yes
+  No  145   1
+  Yes  21   7
+
+Accuracy : 0.8736
+Sensitivity : 0.8735         
+Specificity : 0.8750 
+
+```{r, echo=TRUE}
+
+# control settings for KNN
+# NOTE: needed in order to focus on specificity
+
+train.knn <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 25,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE
+)
+
+# KNN on Training Set
+
+attrition.knn <- train(
+  Attrition ~ .,
+  data = attrition.train,
+  method = "knn",
+  metric = "Spec",
+  trControl = train.knn,
+  preProcess = c("center","scale"),
+  tuneLength = 6
+)
+
+# Adding predictions to Test Data
+predict(attrition.knn, newdata = attrition.test ) -> attrition.test$Attrition_KNN
+# creating confusion matrix
+confusionMatrix(
+  table(attrition.test$Attrition, attrition.test$Attrition_KNN )
+)
+
+
+```
+
+
+### Random Forest
+
+Was very close for Accuracy and Specificity but performed worse in the Sensitivity category. This is due to the fact that the model misclassified one more employee as Attrition: No when they were actually Attrition: Yes
+
+      No Yes
+  No  144   2
+  Yes  21   7
+
+Accuracy : 0.8678 
+Sensitivity : 0.8727          
+Specificity : 0.7778 
+
+```{r, echo=TRUE}
+
+# Random Forest
+train(Attrition ~ .,
+  data = attrition.train,
+  method = "rf",
+  trControl = train.cv,
+  importance = TRUE
+) -> attrition.rf
+
+# Adding predictions to Test Data
+predict(attrition.rf, newdata = attrition.test ) -> attrition.test$Attrition_RF
+# creating confusion matrix
+confusionMatrix(
+  table(attrition.test$Attrition, attrition.test$Attrition_RF )
+)
+
+
+```
+
+
+### Predictions for Attrition
+
+As an additional validation step we then can run the two models across the entire data set and compare against the actual Attrition values
+
+*Validating KNN on Entire Training Data Set*
+
+Again the model performs will acheiving over 85% in all 3 categories
+
+
+       No Yes
+  No  724   6
+  Yes 107  33
+  
+Accuracy : 0.8701
+Sensitivity : 0.8712          
+Specificity : 0.8462
+
+
+```{r, echo=TRUE}
+
+# generating predictions on test data
+employee.df$Attrition_KNN <- predict(attrition.knn, newdata = employee.df)
+
+# creating confusion matrix for KNN
+confusionMatrix(
+  table(employee.df$Attrition, employee.df$Attrition_KNN )
+)
+
+
+```
+
+
+*Validating Random Forest on Entire Training Data Set*
+
+Here the Random Forest performs much higher, exceeding 95%. Because these values are so high, there may be a concern for overfitting. However we did utilize 5-fold Cross Validation in training the model to try prevent this issue.
+
+Furthermore when we look at the ratio of "Yes" to "No" the KNN model strongly deviates from what we've seen up to this point
+
+
+
+       No Yes
+  No  728   2
+  Yes  21 119
+
+Accuracy : 0.9736
+Sensitivity : 0.9720          
+Specificity : 0.9835 
+
+
+```{r, echo=TRUE}
+
+# generating predictions on test data
+employee.df$Attrition_RF <- predict(attrition.rf, newdata = employee.df)
+
+# creating confusion matrix for RF
+confusionMatrix(
+  table(employee.df$Attrition, employee.df$Attrition_RF )
+)
+
+
+
+```
+
+
+*Test Data*
+
+We run the model on the test data sets that do not have the Attrition parameter
+
+NOTE: Was not sure if I need to include BOTH the KNN and Random Forest predictions since homework doc said "You MUST use linear regression but MAY include additional models." So just to be safe I'm including both:
+
+* Attrition_KNN = Predictions for KNN
+* Attrition_RF = Predictions for Random Forest 
+
+```{r, echo=TRUE}
+
+# loading prediction data
+attrition_pred.df <- read.csv(
+  "https://raw.githubusercontent.com/jotsap/CaseStudy2DDS/master/data/CaseStudy2CompSet_NoAttrition.csv", 
+  sep = ",", 
+  header = TRUE)
+str(attrition_pred.df)
+head(attrition_pred.df) 
+
+# generating predictions on test data
+attrition_pred.df$Attrition_KNN <- predict(attrition.knn, attrition_pred.df)
+attrition_pred.df$Attrition_RF <- predict(attrition.rf, attrition_pred.df)
+
+
+
+```
+
+
+
+## Conclusion
+
+For determining Attrition, the most likely profile based on our analysis is the following.
+
+Candidates with "Yes" in the OverTime field are more likely to leave. We are assuming these are non-exempt employees, however this is not explicitly stated for the data set
+
+Candidates that make less than $30,000 per year are more likely to leave. There is evidence of a correlation between MonthlyIncome and Attrition
+
+JobRoles can effect in both ways. Sales Reps are more likely to leave, while Research and Marketing Directors are more likely to stay
+
+MaritalStatus can also effect in both ways. Single employees are more likely to leave, while Divorced employees are more likely to stay
+
+
+
+
+
